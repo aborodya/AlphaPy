@@ -1,13 +1,18 @@
+.. image:: https://badge.fury.io/py/alphapy.svg
+    :target: https://badge.fury.io/py/alphapy
+
+.. image:: https://travis-ci.org/ScottFreeLLC/AlphaPy.svg?branch=master
+
 AlphaPy
 =======
 
 **AlphaPy** is a machine learning framework for both speculators and
-data scientists. It is written in Python with the ``scikit-learn``
-and ``pandas`` libraries, as well as many other helpful libraries
-for feature engineering and visualization. Here are just some of the
-things you can do with AlphaPy:
+data scientists. It is written in Python with the ``scikit-learn``,
+``pandas``, and ``Keras`` libraries, as well as many other helpful
+libraries for feature engineering and visualization. Here are just
+some of the things you can do with AlphaPy:
 
-* Run machine learning models using ``scikit-learn`` and ``xgboost``.
+* Run machine learning models using ``scikit-learn``, ``xgboost``, and ``Keras``.
 * Create models for analyzing the markets with *MarketFlow*.
 * Predict sporting events with *SportFlow*.
 * Develop trading systems and analyze portfolios using *MarketFlow*
