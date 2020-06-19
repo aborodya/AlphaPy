@@ -4,7 +4,7 @@
 # Module    : __main__
 # Created   : July 11, 2013
 #
-# Copyright 2017 ScottFree Analytics LLC
+# Copyright 2020 ScottFree Analytics LLC
 # Mark Conway & Robert D. Scott II
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -31,7 +31,7 @@ from alphapy.data import sample_data
 from alphapy.data import shuffle_data
 from alphapy.estimators import get_estimators
 from alphapy.estimators import scorers
-from alphapy.features import apply_treatments
+from alphapy.features import apply_transforms
 from alphapy.features import create_crosstabs
 from alphapy.features import create_features
 from alphapy.features import create_interactions
@@ -66,10 +66,9 @@ import logging
 import numpy as np
 import os
 import pandas as pd
+from sklearn.model_selection import train_test_split
 import sys
 import warnings
-warnings.simplefilter(action='ignore', category=DeprecationWarning)
-warnings.simplefilter(action='ignore', category=FutureWarning)
 
 
 #
@@ -115,17 +114,26 @@ def training_pipeline(model):
     feature_selection = model.specs['feature_selection']
     grid_search = model.specs['grid_search']
     model_type = model.specs['model_type']
-    predict_mode = model.specs['predict_mode']
     rfe = model.specs['rfe']
     sampling = model.specs['sampling']
     scorer = model.specs['scorer']
+    seed = model.specs['seed']
     separator = model.specs['separator']
+    split = model.specs['split']
     target = model.specs['target']
 
     # Get train and test data
 
     X_train, y_train = get_data(model, Partition.train)
     X_test, y_test = get_data(model, Partition.test)
+
+    # If there is no test partition, then we will split the train partition
+
+    if X_test.empty:
+        logger.info("No Test Data Found")
+        logger.info("Splitting Training Data")
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_train, y_train, test_size=split, random_state=seed)
 
     # Determine if there are any test labels
 
@@ -154,30 +162,30 @@ def training_pipeline(model):
 
     if X_train.shape[1] == X_test.shape[1]:
         split_point = X_train.shape[0]
-        X = pd.concat([X_train, X_test])
+        X_all = pd.concat([X_train, X_test])
     else:
         raise IndexError("The number of training and test columns [%d, %d] must match." %
                          (X_train.shape[1], X_test.shape[1]))
 
-    # Apply treatments to the feature matrix
-    all_features = apply_treatments(model, X)
+    # Apply transforms to the feature matrix
+    X_all = apply_transforms(model, X_all)
 
     # Drop features
-    all_features = drop_features(all_features, drop)
+    X_all = drop_features(X_all, drop)
 
     # Save the train and test files with extracted and dropped features
 
     datestamp = get_datestamp()
     data_dir = SSEP.join([directory, 'input'])
-    df_train = all_features.iloc[:split_point, :]
-    df_train = pd.concat([df_train, pd.DataFrame(y_train, columns=[target])], axis=1)
+    df_train = X_all.iloc[:split_point, :]
+    df_train[target] = y_train
     output_file = USEP.join([model.train_file, datestamp])
-    write_frame(df_train, data_dir, output_file, extension, separator)
-    df_test = all_features.iloc[split_point:, :]
+    write_frame(df_train, data_dir, output_file, extension, separator, index=False)
+    df_test = X_all.iloc[split_point:, :]
     if y_test.any():
-        df_test = pd.concat([df_test, pd.DataFrame(y_test, columns=[target])], axis=1)
+        df_test[target] = y_test
     output_file = USEP.join([model.test_file, datestamp])
-    write_frame(df_test, data_dir, output_file, extension, separator)
+    write_frame(df_test, data_dir, output_file, extension, separator, index=False)
 
     # Create crosstabs for any categorical features
 
@@ -186,20 +194,20 @@ def training_pipeline(model):
 
     # Create initial features
 
-    all_features = create_features(model, all_features)
-    X_train, X_test = np.array_split(all_features, [split_point])
+    X_all = create_features(model, X_all, X_train, X_test, y_train)
+    X_train, X_test = np.array_split(X_all, [split_point])
     model = save_features(model, X_train, X_test)
 
     # Generate interactions
 
-    all_features = create_interactions(model, all_features)
-    X_train, X_test = np.array_split(all_features, [split_point])
+    X_all = create_interactions(model, X_all)
+    X_train, X_test = np.array_split(X_all, [split_point])
     model = save_features(model, X_train, X_test)
 
     # Remove low-variance features
 
-    all_features = remove_lv_features(model, all_features)
-    X_train, X_test = np.array_split(all_features, [split_point])
+    X_all = remove_lv_features(model, X_all)
+    X_train, X_test = np.array_split(X_all, [split_point])
     model = save_features(model, X_train, X_test)
 
     # Shuffle the data [if specified]
@@ -242,6 +250,8 @@ def training_pipeline(model):
             logger.info("Algorithm %s not found", algo)
         # initial fit
         model = first_fit(model, algo, est)
+        # copy feature name master into feature names per algorithm
+        model.fnames_algo[algo] = model.feature_names
         # recursive feature elimination
         if rfe:
             has_coef = hasattr(est, "coef_")
@@ -311,13 +321,13 @@ def prediction_pipeline(model):
 
     directory = model.specs['directory']
     drop = model.specs['drop']
-    extension = model.specs['extension']
     feature_selection = model.specs['feature_selection']
     model_type = model.specs['model_type']
     rfe = model.specs['rfe']
-    separator = model.specs['separator']
 
-    # Get all data. We need original train and test for interactions.
+    # Get all data. We need original train and test for encodings.
+
+    X_train, y_train = get_data(model, Partition.train)
 
     partition = Partition.predict
     X_predict, _ = get_data(model, partition)
@@ -331,20 +341,20 @@ def prediction_pipeline(model):
     logger.info("Number of Prediction Rows    : %d", X_predict.shape[0])
     logger.info("Number of Prediction Columns : %d", X_predict.shape[1])
 
-    # Apply treatments to the feature matrix
-    all_features = apply_treatments(model, X_predict)
+    # Apply transforms to the feature matrix
+    X_all = apply_transforms(model, X_predict)
 
     # Drop features
-    all_features = drop_features(all_features, drop)
+    X_all = drop_features(X_all, drop)
 
     # Create initial features
-    all_features = create_features(model, all_features)
+    X_all = create_features(model, X_all, X_train, X_predict, y_train)
 
     # Generate interactions
-    all_features = create_interactions(model, all_features)
+    X_all = create_interactions(model, X_all)
 
     # Remove low-variance features
-    all_features = remove_lv_features(model, all_features)
+    X_all = remove_lv_features(model, X_all)
 
     # Load the univariate support vector, if any
 
@@ -352,8 +362,8 @@ def prediction_pipeline(model):
         logger.info("Getting Univariate Support")
         try:
             support = model.feature_map['uni_support']
-            all_features = all_features[:, support]
-            logger.info("New Feature Count : %d", all_features.shape[1])
+            X_all = X_all[:, support]
+            logger.info("New Feature Count : %d", X_all.shape[1])
         except:
             logger.info("No Univariate Support")
 
@@ -363,8 +373,8 @@ def prediction_pipeline(model):
         logger.info("Getting RFE Support")
         try:
             support = model.feature_map['rfe_support']
-            all_features = all_features[:, support]
-            logger.info("New Feature Count : %d", all_features.shape[1])
+            X_all = X_all[:, support]
+            logger.info("New Feature Count : %d", X_all.shape[1])
         except:
             logger.info("No RFE Support")
 
@@ -375,18 +385,15 @@ def prediction_pipeline(model):
     
     logger.info("Making Predictions")
     tag = 'BEST'
-    model.preds[(tag, partition)] = predictor.predict(all_features)
+    model.preds[(tag, partition)] = predictor.predict(X_all)
     if model_type == ModelType.classification:
-        model.probas[(tag, partition)]  = predictor.predict_proba(all_features)[:, 1]
-
-    # Get date stamp to record file creation
-
-    d = datetime.now()
-    f = "%Y%m%d"
-    timestamp = d.strftime(f)
+        model.probas[(tag, partition)]  = predictor.predict_proba(X_all)[:, 1]
 
     # Save predictions
     save_predictions(model, tag, partition)
+
+    # Return the model
+    return model
 
 
 #
@@ -439,10 +446,15 @@ def main(args=None):
 
     """
 
+    # Suppress Warnings
+
+    warnings.simplefilter(action='ignore', category=DeprecationWarning)
+    warnings.simplefilter(action='ignore', category=FutureWarning)
+
     # Logging
 
     logging.basicConfig(format="[%(asctime)s] %(levelname)s\t%(message)s",
-                        filename="alphapy.log", filemode='a', level=logging.DEBUG,
+                        filename="alphapy.log", filemode='a', level=logging.INFO,
                         datefmt='%m/%d/%y %H:%M:%S')
     formatter = logging.Formatter("[%(asctime)s] %(levelname)s\t%(message)s",
                                   datefmt='%m/%d/%y %H:%M:%S')

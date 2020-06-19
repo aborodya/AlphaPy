@@ -4,7 +4,7 @@
 # Module    : plots
 # Created   : July 11, 2013
 #
-# Copyright 2017 ScottFree Analytics LLC
+# Copyright 2020 ScottFree Analytics LLC
 # Mark Conway & Robert D. Scott II
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -63,12 +63,12 @@ from alphapy.globals import Q1, Q3
 from alphapy.utilities import remove_list_items
 
 from bokeh.plotting import figure, show, output_file
-from itertools import cycle
-from itertools import product
+import itertools
 import logging
 import math
+import matplotlib
+matplotlib.use('PS')
 import matplotlib.pyplot as plt
-plt.switch_backend('agg')
 from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 import pandas as pd
@@ -85,6 +85,7 @@ from sklearn.model_selection import learning_curve
 from sklearn.model_selection import StratifiedKFold
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import validation_curve
+from sklearn.utils.multiclass import unique_labels
 
 
 #
@@ -388,36 +389,44 @@ def plot_importance(model, partition):
     plot_dir = get_plot_directory(model)
     pstring = datasets[partition]
 
-    # Get X, Y for correct partition
-
-    X, y = get_partition_data(model, partition)
-
     # For each algorithm that has importances, generate the plot.
 
-    n_top = 10
+    n_top = 20
+
     for algo in model.algolist:
         logger.info("Feature Importances for Algorithm: %s", algo)
         try:
-            importances = model.importances[algo]
-            # forest was input parameter
+            # get feature importances
+            importances = np.array(model.importances[algo])
+            imp_flag = True
+        except:
+            imp_flag = False
+        if imp_flag:
+            # sort the importances by index
             indices = np.argsort(importances)[::-1]
+            # get feature names
+            feature_names = np.array(model.fnames_algo[algo])
+            n_features = len(feature_names)
             # log the feature ranking
             logger.info("Feature Ranking:")
-            for f in range(n_top):
-                logger.info("%d. Feature %d (%f)" % (f + 1, indices[f], importances[indices[f]]))
+            n_min = min(n_top, n_features)
+            for i in range(n_min):
+                logger.info("%d. %s (%f)" % (i + 1,
+                            feature_names[indices[i]],
+                            importances[indices[i]]))
             # plot the feature importances
             title = BSEP.join([algo, "Feature Importances [", pstring, "]"])
-            plt.style.use('classic')
             plt.figure()
             plt.title(title)
-            plt.bar(list(range(n_top)), importances[indices][:n_top], color="b", align="center")
-            plt.xticks(list(range(n_top)), indices[:n_top])
-            plt.xlim([-1, n_top])
+            plt.barh(range(n_min), importances[indices][:n_min][::-1])
+            plt.yticks(range(n_min), feature_names[indices][:n_min][::-1])
+            plt.ylim([-1, n_min])
+            plt.xlabel('Relative Importance')
             # save the plot
             tag = USEP.join([pstring, algo])
             write_plot('matplotlib', plt, 'feature_importance', tag, plot_dir)
-        except:
-            logger.info("%s does not have feature importances", algo)
+        else:
+            logger.info("No Feature Importances for %s" % algo)
 
 
 #
@@ -469,7 +478,7 @@ def plot_learning_curve(model, partition):
 
     cv = StratifiedKFold(n_splits=cv_folds, shuffle=shuffle, random_state=seed)
 
-    # Plot a learning curve for each algorithm.   
+    # Plot a learning curve for each algorithm.
 
     ylim = (0.4, 1.01)
 
@@ -555,15 +564,12 @@ def plot_roc_curve(model, partition):
 
     plt.style.use('classic')
     plt.figure()
-    colors = cycle(['cyan', 'indigo', 'seagreen', 'yellow', 'blue', 'darkorange'])
     lw = 2
 
     # Plot a ROC Curve for each algorithm.
 
     for algo in model.algolist:
         logger.info("ROC Curve for Algorithm: %s", algo)
-        # get estimator
-        estimator = model.estimators[algo]
         # compute ROC curve and ROC area for each class
         probas = model.probas[(algo, partition)]
         fpr, tpr, _ = roc_curve(y, probas)
@@ -621,45 +627,64 @@ def plot_confusion_matrix(model, partition):
         return None
 
     # Get X, Y for correct partition.
-
     X, y = get_partition_data(model, partition)
+
+    # Plot Parameters
+    np.set_printoptions(precision=2)
+    cmap = plt.cm.Blues
+    fmt = '.2f'
+
+    # Generate a Confusion Matrix for each algorithm
 
     for algo in model.algolist:
         logger.info("Confusion Matrix for Algorithm: %s", algo)
+
         # get predictions for this partition
         y_pred = model.preds[(algo, partition)]
+
         # compute confusion matrix
         cm = confusion_matrix(y, y_pred)
         logger.info('Confusion Matrix:')
         logger.info('%s', cm)
-        # initialize plot
-        np.set_printoptions(precision=2)
-        plt.style.use('classic')
-        plt.figure()
-        # plot the confusion matrix
-        cmap = plt.cm.Blues
-        plt.imshow(cm, interpolation='nearest', cmap=cmap)
-        title = BSEP.join([algo, "Confusion Matrix [", pstring, "]"])
-        plt.title(title)
-        plt.colorbar()
-        # set up x and y axes
-        y_values, y_counts = np.unique(y, return_counts=True)
-        tick_marks = np.arange(len(y_values))
-        plt.xticks(tick_marks, y_values, rotation=45)
-        plt.yticks(tick_marks, y_values)
+
         # normalize confusion matrix
-        cmn = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-        # place text in square of confusion matrix
-        thresh = (cm.max() + cm.min()) / 2.0
-        for i, j in product(list(range(cm.shape[0])), list(range(cm.shape[1]))):
-            cmr = round(cmn[i, j], 3)
-            plt.text(j, i, cmr,
-                     horizontalalignment="center",
-                     color="white" if cm[i, j] > thresh else "black")
-        # labels
-        plt.tight_layout()
-        plt.ylabel('True Label')
-        plt.xlabel('Predicted Label')
+        cm_pct = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+
+        # initialize plot
+        _, ax = plt.subplots()
+
+        # set the title of the confusion matrix
+        title = algo +  " Confusion Matrix: " + pstring + " [" + str(np.sum(cm)) + "]"
+        plt.title(title)
+
+        # only use the labels that appear in the data
+        classes = unique_labels(y, y_pred)
+
+        # show all ticks
+        ax.set(xticks=np.arange(cm.shape[1]),
+            yticks=np.arange(cm.shape[0]),
+            xticklabels=classes, yticklabels=classes,
+            title=title,
+            ylabel='True Label',
+            xlabel='Predicted Label')
+
+        # rotate the tick labels and set their alignment
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right",
+                rotation_mode="anchor")
+
+        # loop over data dimensions and create text annotations
+        thresh = (cm_pct.max() + cm_pct.min()) / 2.0
+        for i in range(cm.shape[0]):
+            for j in range(cm.shape[1]):
+                cm_text = format(cm_pct[i, j], fmt) + "  [" + str(cm[i, j]) + "]"
+                ax.text(j, i, cm_text,
+                        ha="center", va="center",
+                        color="white" if cm_pct[i, j] >= thresh else "black")
+
+        # show the color bar
+        im = ax.imshow(cm_pct, interpolation='nearest', cmap=cmap)
+        ax.figure.colorbar(im, ax=ax)
+
         # save the chart
         tag = USEP.join([pstring, algo])
         write_plot('matplotlib', plt, 'confusion', tag, plot_dir)
@@ -715,7 +740,7 @@ def plot_validation_curve(model, partition, pname, prange):
     alpha = 0.2
 
     # Calculate a validation curve for each algorithm.
-    
+
     for algo in model.algolist:
         logger.info("Algorithm: %s", algo)
         # get estimator

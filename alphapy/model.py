@@ -4,7 +4,7 @@
 # Module    : model
 # Created   : July 11, 2013
 #
-# Copyright 2017 ScottFree Analytics LLC
+# Copyright 2020 ScottFree Analytics LLC
 # Mark Conway & Robert D. Scott II
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -43,17 +43,19 @@ from alphapy.utilities import most_recent_file
 
 from copy import copy
 from datetime import datetime
+import itertools
+import joblib
 from keras.models import load_model
 import logging
 import numpy as np
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.externals import joblib
 from sklearn.linear_model import LogisticRegression
 from sklearn.linear_model import RidgeCV
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import auc
 from sklearn.metrics import average_precision_score
+from sklearn.metrics import balanced_accuracy_score
 from sklearn.metrics import brier_score_loss
 from sklearn.metrics import classification_report
 from sklearn.metrics import cohen_kappa_score
@@ -63,6 +65,7 @@ from sklearn.metrics import f1_score
 from sklearn.metrics import log_loss
 from sklearn.metrics import mean_absolute_error
 from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_log_error
 from sklearn.metrics import median_absolute_error
 from sklearn.metrics import precision_score
 from sklearn.metrics import r2_score
@@ -70,6 +73,7 @@ from sklearn.metrics import recall_score
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import roc_curve
 from sklearn.metrics.cluster import adjusted_rand_score
+from sklearn.model_selection import cross_val_score
 from sklearn.model_selection import train_test_split
 import sys
 import yaml
@@ -134,9 +138,9 @@ class Model:
         stored in ``algolist``.
 
     """
-            
+
     # __init__
-            
+
     def __init__(self,
                  specs):
         # specifications
@@ -158,6 +162,8 @@ class Model:
         except:
             raise KeyError("Model specs must include the key: algorithms")
         self.best_algo = None
+        # feature names
+        self.feature_names = []
         # feature map
         self.feature_map = {}
         # Key: (algorithm)
@@ -165,12 +171,13 @@ class Model:
         self.importances = {}
         self.coefs = {}
         self.support = {}
+        self.fnames_algo = {}
         # Keys: (algorithm, partition)
         self.preds = {}
         self.probas = {}
         # Keys: (algorithm, partition, metric)
         self.metrics = {}
-                
+
     # __str__
 
     def __str__(self):
@@ -211,7 +218,7 @@ def get_model_config():
 
     full_path = SSEP.join([PSEP, 'config', 'model.yml'])
     with open(full_path, 'r') as ymlfile:
-        cfg = yaml.load(ymlfile)
+        cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
 
     # Store configuration parameters in dictionary
 
@@ -360,13 +367,13 @@ def get_model_config():
     specs['learning_curve'] = cfg['plots']['learning_curve']
     specs['roc_curve'] = cfg['plots']['roc_curve']
 
-    # Section: treatments
+    # Section: transforms
 
     try:
-        specs['treatments'] = cfg['treatments']
+        specs['transforms'] = cfg['transforms']
     except:
-        specs['treatments'] = None
-        logger.info("No Treatments Found")
+        specs['transforms'] = None
+        logger.info("No transforms Found")
 
     # Section: xgboost
 
@@ -444,7 +451,7 @@ def get_model_config():
     logger.info('submit_probas     = %r', specs['submit_probas'])
     logger.info('target [y]        = %s', specs['target'])
     logger.info('target_value      = %d', specs['target_value'])
-    logger.info('treatments        = %s', specs['treatments'])
+    logger.info('transforms        = %s', specs['transforms'])
     logger.info('tsne              = %r', specs['tsne'])
     logger.info('tsne_components   = %d', specs['tsne_components'])
     logger.info('tsne_learn_rate   = %f', specs['tsne_learn_rate'])
@@ -572,7 +579,7 @@ def load_feature_map(model, directory):
         feature_map = joblib.load(file_name)
         model.feature_map = feature_map
     except:
-        logging.error("Could not find feature map in %s", search_path)
+        logging.error("Could not find feature map in %s", search_dir)
 
     # Return the model with the feature map
     return model
@@ -649,11 +656,13 @@ def first_fit(model, algo, est):
 
     # Extract model parameters.
 
+    cv_folds = model.specs['cv_folds']
     esr = model.specs['esr']
-    model_type = model.specs['model_type']
+    n_jobs = model.specs['n_jobs']
     scorer = model.specs['scorer']
     seed = model.specs['seed']
     split = model.specs['split']
+    verbosity = model.specs['verbosity']
 
     # Extract model data.
 
@@ -662,7 +671,6 @@ def first_fit(model, algo, est):
 
     # Fit the initial model.
 
-    algo_keras = 'KERAS' in algo
     algo_xgb = 'XGB' in algo
 
     if algo_xgb and scorer in xgb_score_map:
@@ -675,8 +683,17 @@ def first_fit(model, algo, est):
     else:
         est.fit(X_train, y_train)
 
-    # Store the estimator
+    # Get the initial scores
 
+    logger.info("Cross-Validation")
+    try:
+        scores = cross_val_score(est, X_train, y_train, scoring=scorer, cv=cv_folds,
+                                 n_jobs=n_jobs, verbose=verbosity)
+        logger.info("Cross-Validation Scores: %s", scores)
+    except:
+        logger.info("Cross-Validation Failed: Try setting number_jobs = 1 in model.yml")
+
+    # Store the estimator
     model.estimators[algo] = est
 
     # Record importances and coefficients if necessary.
@@ -965,7 +982,7 @@ def predict_blend(model):
         model.probas[(blend_tag, Partition.test)] = clf.predict_proba(X_blend_test)[:, 1]
     else:
         alphas = [0.0001, 0.005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5,
-                  1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0]    
+                  1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0]
         rcvr = RidgeCV(alphas=alphas, normalize=True, cv=cv_folds)
         rcvr.fit(X_blend_train, y_train)
         model.estimators[blend_tag] = rcvr
@@ -1056,7 +1073,11 @@ def generate_metrics(model, partition):
                 except:
                     logger.info("Average Precision Score not calculated")
                 try:
-                    model.metrics[(algo, partition, 'brier_score')] = brier_score_loss(expected, probas)
+                    model.metrics[(algo, partition, 'balanced_accuracy')] = balanced_accuracy_score(expected, predicted)
+                except:
+                    logger.info("Accuracy Score not calculated")
+                try:
+                    model.metrics[(algo, partition, 'brier_score_loss')] = brier_score_loss(expected, probas)
                 except:
                     logger.info("Brier Score not calculated")
                 try:
@@ -1095,17 +1116,21 @@ def generate_metrics(model, partition):
                 except:
                     logger.info("Explained Variance Score not calculated")
                 try:
-                    model.metrics[(algo, partition, 'mean_absolute_error')] = mean_absolute_error(expected, predicted)
+                    model.metrics[(algo, partition, 'neg_mean_absolute_error')] = mean_absolute_error(expected, predicted)
                 except:
                     logger.info("Mean Absolute Error not calculated")
                 try:
-                    model.metrics[(algo, partition, 'median_absolute_error')] = median_absolute_error(expected, predicted)
+                    model.metrics[(algo, partition, 'neg_median_absolute_error')] = median_absolute_error(expected, predicted)
                 except:
                     logger.info("Median Absolute Error not calculated")
                 try:
                     model.metrics[(algo, partition, 'neg_mean_squared_error')] = mean_squared_error(expected, predicted)
                 except:
                     logger.info("Mean Squared Error not calculated")
+                try:
+                    model.metrics[(algo, partition, 'neg_mean_squared_log_error')] = mean_squared_log_error(expected, predicted)
+                except:
+                    logger.info("Mean Squared Log Error not calculated")
                 try:
                     model.metrics[(algo, partition, 'r2')] = r2_score(expected, predicted)
                 except:
@@ -1166,7 +1191,10 @@ def save_predictions(model, tag, partition):
     output_dir = SSEP.join([directory, 'output'])
 
     # Read the prediction frame
-    pf = read_frame(input_dir, datasets[partition], extension, separator)
+    file_spec = ''.join([datasets[partition], '*'])
+    file_name = most_recent_file(input_dir, file_spec)
+    file_name = file_name.split(SSEP)[-1].split(PSEP)[0]
+    pf = read_frame(input_dir, file_name, extension, separator)
 
     # Cull records before the prediction date
 
@@ -1178,7 +1206,7 @@ def save_predictions(model, tag, partition):
 
     if found_pdate:
         pd_indices = pf[pf.date >= predict_date].index.tolist()
-        pf = pf.ix[pd_indices]
+        pf = pf.iloc[pd_indices]
     else:
         pd_indices = pf.index.tolist()
 

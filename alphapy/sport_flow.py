@@ -4,7 +4,7 @@
 # Module    : sport_flow
 # Created   : July 11, 2013
 #
-# Copyright 2017 ScottFree Analytics LLC
+# Copyright 2020 ScottFree Analytics LLC
 # Mark Conway & Robert D. Scott II
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -50,8 +50,6 @@ import os
 import pandas as pd
 import sys
 import warnings
-warnings.simplefilter(action='ignore', category=DeprecationWarning)
-warnings.simplefilter(action='ignore', category=FutureWarning)
 import yaml
 
 
@@ -157,7 +155,7 @@ def get_sport_config():
 
     full_path = SSEP.join(['.', 'config', 'sport.yml'])
     with open(full_path, 'r') as ymlfile:
-        cfg = yaml.load(ymlfile)
+        cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
 
     # Store configuration parameters in dictionary
 
@@ -635,6 +633,11 @@ def main(args=None):
         Training date must be before prediction date.
 
     """
+
+    # Suppress Warnings
+
+    warnings.simplefilter(action='ignore', category=DeprecationWarning)
+    warnings.simplefilter(action='ignore', category=FutureWarning)
 
     # Logging
 

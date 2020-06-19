@@ -4,7 +4,7 @@
 # Module    : system
 # Created   : July 11, 2013
 #
-# Copyright 2017 ScottFree Analytics LLC
+# Copyright 2020 ScottFree Analytics LLC
 # Mark Conway & Robert D. Scott II
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -32,7 +32,7 @@ from alphapy.frame import read_frame
 from alphapy.frame import write_frame
 from alphapy.globals import Orders
 from alphapy.globals import BSEP, SSEP
-from alphapy.market_variables import vexec
+from alphapy.variables import vexec
 from alphapy.space import Space
 from alphapy.portfolio import Trade
 from alphapy.utilities import most_recent_file
@@ -367,7 +367,7 @@ def run_system(model,
     if gtlist:
         tspace = Space(system_name, "trades", group.space.fractal)
         gtlist = sorted(gtlist, key=lambda x: x[0])
-        tf = DataFrame.from_items(gtlist, orient='index', columns=Trade.states)
+        tf = DataFrame.from_dict(dict(gtlist), orient='index', columns=Trade.states)
         tfname = frame_name(gname, tspace)
         system_dir = SSEP.join([directory, 'systems'])
         labels = ['date']
